@@ -46,26 +46,23 @@ func main() {
 		}
 	}
 
-	httpOpts := []server.StreamableHTTPOption{
+	mcpHandler := server.NewStreamableHTTPServer(mcpServer,
 		server.WithEndpointPath("/mcp"),
-	}
-	if cfg.Auth.ResourceURL != "" {
-		httpOpts = append(httpOpts, server.WithProtectedResourceMetadata(
-			server.ProtectedResourceMetadataConfig{
-				Resource:             cfg.Auth.ResourceURL,
-				AuthorizationServers: []string{cfg.Auth.Issuer},
-			},
-		))
-	}
-
-	mcpHandler := server.NewStreamableHTTPServer(mcpServer, httpOpts...)
+	)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.Handle("/", auth.Middleware(cfg.Auth, mcpHandler))
+
+	var oauth *auth.OAuthServer
+	if cfg.Auth.Issuer != "" && cfg.Auth.ClientID != "" {
+		oauth = auth.NewOAuthServer(cfg.Auth)
+		oauth.Register(mux)
+	}
+
+	mux.Handle("/", auth.Middleware(cfg.Auth, oauth, mcpHandler))
 
 	httpServer := &http.Server{
 		Addr:    *addr,
@@ -87,4 +84,3 @@ func main() {
 		log.Fatalf("server: %v", err)
 	}
 }
-

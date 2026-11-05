@@ -23,9 +23,11 @@ type SandboxConfig struct {
 }
 
 type AuthConfig struct {
-	Issuer      string `yaml:"issuer"`
-	ResourceURL string `yaml:"resource_url"`
-	Token       string `yaml:"token"`
+	Issuer       string `yaml:"issuer"`
+	ResourceURL  string `yaml:"resource_url"`
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	Token        string `yaml:"token"`
 }
 
 type ChildConfig struct {
@@ -55,6 +57,12 @@ func Load(path string) (*Config, error) {
 	}
 	if t := os.Getenv("AUTH_TOKEN"); t != "" {
 		cfg.Auth.Token = t
+	}
+	if v := os.Getenv("OAUTH_CLIENT_ID"); v != "" {
+		cfg.Auth.ClientID = v
+	}
+	if v := os.Getenv("OAUTH_CLIENT_SECRET"); v != "" {
+		cfg.Auth.ClientSecret = v
 	}
 	return &cfg, nil
 }

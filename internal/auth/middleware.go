@@ -7,7 +7,7 @@ import (
 	"github.com/jaenster/claude-remote/internal/config"
 )
 
-func Middleware(cfg config.AuthConfig, next http.Handler) http.Handler {
+func Middleware(cfg config.AuthConfig, oauth *OAuthServer, next http.Handler) http.Handler {
 	if cfg.Issuer == "" && cfg.Token == "" {
 		return next
 	}
@@ -16,7 +16,7 @@ func Middleware(cfg config.AuthConfig, next http.Handler) http.Handler {
 		return &tokenMiddleware{token: cfg.Token, next: next}
 	}
 
-	return &oidcMiddleware{issuer: cfg.Issuer, next: next}
+	return &oauthMiddleware{oauth: oauth, next: next}
 }
 
 type tokenMiddleware struct {
@@ -42,12 +42,12 @@ func (m *tokenMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.next.ServeHTTP(w, r)
 }
 
-type oidcMiddleware struct {
-	issuer string
-	next   http.Handler
+type oauthMiddleware struct {
+	oauth *OAuthServer
+	next  http.Handler
 }
 
-func (m *oidcMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (m *oauthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if skipAuth(r) {
 		m.next.ServeHTTP(w, r)
 		return
@@ -58,14 +58,16 @@ func (m *oidcMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	// TODO: validate JWT against the OIDC issuer JWKS.
-	// For now, accept any bearer token when issuer is configured.
-	// Add github.com/coreos/go-oidc/v3 for proper validation.
-
+	token := strings.TrimPrefix(bearer, "Bearer ")
+	if !m.oauth.ValidateToken(token) {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
 	m.next.ServeHTTP(w, r)
 }
 
 func skipAuth(r *http.Request) bool {
-	return strings.HasPrefix(r.URL.Path, "/.well-known/")
+	p := r.URL.Path
+	return strings.HasPrefix(p, "/.well-known/") ||
+		strings.HasPrefix(p, "/oauth/")
 }

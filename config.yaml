@@ -6,11 +6,16 @@ sandbox:
   workdir: /workspace
 
 auth:
-  # OIDC issuer for token validation (e.g. Authentik, Keycloak, Auth0)
+  # OIDC issuer (Authentik, Keycloak, Auth0). The server acts as its own OAuth
+  # authorization server and uses this as the upstream identity provider.
   # issuer: https://id.example.com/application/o/claude-remote/
 
-  # Public URL of this MCP server (for OAuth protected resource metadata)
+  # Public URL of this MCP server (used for OAuth endpoints and metadata)
   # resource_url: https://mcp.example.com
+
+  # OAuth client credentials for the upstream IdP (or set OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET)
+  # client_id: ""
+  # client_secret: ""
 
   # Simple bearer token auth (alternative to OIDC, set via AUTH_TOKEN env var)
   # token: ""

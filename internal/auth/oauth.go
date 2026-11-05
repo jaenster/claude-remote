@@ -82,10 +82,21 @@ func (s *OAuthServer) fetchUpstreamMeta() error {
 
 func (s *OAuthServer) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleMetadata)
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource", s.handleProtectedResource)
 	mux.HandleFunc("POST /oauth/register", s.handleRegister)
 	mux.HandleFunc("GET /oauth/authorize", s.handleAuthorize)
 	mux.HandleFunc("GET /oauth/callback", s.handleCallback)
 	mux.HandleFunc("POST /oauth/token", s.handleToken)
+}
+
+func (s *OAuthServer) handleProtectedResource(w http.ResponseWriter, _ *http.Request) {
+	base := strings.TrimSuffix(s.cfg.ResourceURL, "/")
+	meta := map[string]any{
+		"resource":              base,
+		"authorization_servers": []string{base},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(meta)
 }
 
 func (s *OAuthServer) handleMetadata(w http.ResponseWriter, _ *http.Request) {

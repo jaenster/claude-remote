@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -8,11 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,12 +20,9 @@ import (
 
 type OAuthServer struct {
 	cfg              config.AuthConfig
-	stateDir         string
+	store            *Store
 	upstreamMeta     *oidcMeta
-	clients          sync.Map
 	authCodes        sync.Map
-	tokens           sync.Map
-	mu               sync.Mutex
 	upstreamInitOnce sync.Once
 	upstreamInitErr  error
 }
@@ -50,86 +45,14 @@ type authCode struct {
 	ExpiresAt           time.Time
 }
 
-type persistedToken struct {
-	Token     string    `json:"token"`
-	ClientID  string    `json:"client_id"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
-type persistedState struct {
-	Clients []clientRegistration `json:"clients"`
-	Tokens  []persistedToken     `json:"tokens"`
-}
-
 type oidcMeta struct {
 	Issuer                string `json:"issuer"`
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 }
 
-func NewOAuthServer(cfg config.AuthConfig, stateDir string) *OAuthServer {
-	s := &OAuthServer{cfg: cfg, stateDir: stateDir}
-	s.loadState()
-	return s
-}
-
-func (s *OAuthServer) statePath() string {
-	return filepath.Join(s.stateDir, ".oauth-state.json")
-}
-
-func (s *OAuthServer) loadState() {
-	data, err := os.ReadFile(s.statePath())
-	if err != nil {
-		return
-	}
-	var state persistedState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return
-	}
-	now := time.Now()
-	for _, c := range state.Clients {
-		c := c
-		s.clients.Store(c.ClientID, &c)
-	}
-	for _, t := range state.Tokens {
-		if now.Before(t.ExpiresAt) {
-			s.tokens.Store(t.Token, &persistedToken{
-				Token:     t.Token,
-				ClientID:  t.ClientID,
-				ExpiresAt: t.ExpiresAt,
-			})
-		}
-	}
-	slog.Info("loaded OAuth state", "clients", len(state.Clients), "tokens", len(state.Tokens))
-}
-
-func (s *OAuthServer) saveState() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var state persistedState
-	now := time.Now()
-	s.clients.Range(func(_, v any) bool {
-		state.Clients = append(state.Clients, *v.(*clientRegistration))
-		return true
-	})
-	s.tokens.Range(func(_, v any) bool {
-		t := v.(*persistedToken)
-		if now.Before(t.ExpiresAt) {
-			state.Tokens = append(state.Tokens, *t)
-		}
-		return true
-	})
-
-	data, err := json.Marshal(state)
-	if err != nil {
-		slog.Error("marshal OAuth state", "err", err)
-		return
-	}
-	os.MkdirAll(filepath.Dir(s.statePath()), 0700)
-	if err := os.WriteFile(s.statePath(), data, 0600); err != nil {
-		slog.Error("write OAuth state", "err", err)
-	}
+func NewOAuthServer(cfg config.AuthConfig, store *Store) *OAuthServer {
+	return &OAuthServer{cfg: cfg, store: store}
 }
 
 func (s *OAuthServer) fetchUpstreamMeta() error {
@@ -202,14 +125,16 @@ func (s *OAuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientID := randomHex(20)
-	reg := clientRegistration{
+	reg := &clientRegistration{
 		ClientID:     clientID,
 		RedirectURIs: req.RedirectURIs,
 		ClientName:   req.ClientName,
 		TokenMethod:  "none",
 	}
-	s.clients.Store(clientID, &reg)
-	s.saveState()
+	if err := s.store.SaveClient(r.Context(), reg); err != nil {
+		http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -233,12 +158,15 @@ func (s *OAuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	regVal, ok := s.clients.Load(clientID)
-	if !ok {
+	reg, err := s.store.LoadClient(r.Context(), clientID)
+	if err != nil {
+		http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
+		return
+	}
+	if reg == nil {
 		http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
 		return
 	}
-	reg := regVal.(*clientRegistration)
 	if !containsStr(reg.RedirectURIs, redirectURI) {
 		http.Error(w, `{"error":"invalid_redirect_uri"}`, http.StatusBadRequest)
 		return
@@ -391,12 +319,11 @@ func (s *OAuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ourToken := randomHex(32)
-	s.tokens.Store(ourToken, &persistedToken{
-		Token:     ourToken,
-		ClientID:  ac.ClientID,
-		ExpiresAt: time.Now().Add(time.Duration(upstream.ExpiresIn) * time.Second),
-	})
-	s.saveState()
+	expiresAt := time.Now().Add(time.Duration(upstream.ExpiresIn) * time.Second)
+	if err := s.store.SaveToken(r.Context(), ourToken, ac.ClientID, expiresAt); err != nil {
+		http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -408,16 +335,7 @@ func (s *OAuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *OAuthServer) ValidateToken(token string) bool {
-	val, ok := s.tokens.Load(token)
-	if !ok {
-		return false
-	}
-	t := val.(*persistedToken)
-	if time.Now().After(t.ExpiresAt) {
-		s.tokens.Delete(token)
-		return false
-	}
-	return true
+	return s.store.ValidateToken(context.Background(), token)
 }
 
 func randomHex(n int) string {

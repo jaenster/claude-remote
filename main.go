@@ -58,7 +58,16 @@ func main() {
 
 	var oauth *auth.OAuthServer
 	if cfg.Auth.Issuer != "" && cfg.Auth.ClientID != "" {
-		oauth = auth.NewOAuthServer(cfg.Auth, cfg.Sandbox.Workdir)
+		dbURL := os.Getenv("DATABASE_URL")
+		if dbURL == "" {
+			log.Fatal("DATABASE_URL required when OAuth is enabled")
+		}
+		store, err := auth.NewStore(ctx, dbURL)
+		if err != nil {
+			log.Fatalf("oauth store: %v", err)
+		}
+		defer store.Close()
+		oauth = auth.NewOAuthServer(cfg.Auth, store)
 		oauth.Register(mux)
 	}
 

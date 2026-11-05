@@ -58,7 +58,7 @@ func main() {
 
 	var oauth *auth.OAuthServer
 	if cfg.Auth.Issuer != "" && cfg.Auth.ClientID != "" {
-		oauth = auth.NewOAuthServer(cfg.Auth)
+		oauth = auth.NewOAuthServer(cfg.Auth, cfg.Sandbox.Workdir)
 		oauth.Register(mux)
 	}
 

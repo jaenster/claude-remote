@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,10 +22,12 @@ import (
 
 type OAuthServer struct {
 	cfg              config.AuthConfig
+	stateDir         string
 	upstreamMeta     *oidcMeta
 	clients          sync.Map
 	authCodes        sync.Map
 	tokens           sync.Map
+	mu               sync.Mutex
 	upstreamInitOnce sync.Once
 	upstreamInitErr  error
 }
@@ -45,10 +50,15 @@ type authCode struct {
 	ExpiresAt           time.Time
 }
 
-type accessToken struct {
-	Token     string
-	ClientID  string
-	ExpiresAt time.Time
+type persistedToken struct {
+	Token     string    `json:"token"`
+	ClientID  string    `json:"client_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type persistedState struct {
+	Clients []clientRegistration `json:"clients"`
+	Tokens  []persistedToken     `json:"tokens"`
 }
 
 type oidcMeta struct {
@@ -57,8 +67,69 @@ type oidcMeta struct {
 	TokenEndpoint         string `json:"token_endpoint"`
 }
 
-func NewOAuthServer(cfg config.AuthConfig) *OAuthServer {
-	return &OAuthServer{cfg: cfg}
+func NewOAuthServer(cfg config.AuthConfig, stateDir string) *OAuthServer {
+	s := &OAuthServer{cfg: cfg, stateDir: stateDir}
+	s.loadState()
+	return s
+}
+
+func (s *OAuthServer) statePath() string {
+	return filepath.Join(s.stateDir, ".oauth-state.json")
+}
+
+func (s *OAuthServer) loadState() {
+	data, err := os.ReadFile(s.statePath())
+	if err != nil {
+		return
+	}
+	var state persistedState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return
+	}
+	now := time.Now()
+	for _, c := range state.Clients {
+		c := c
+		s.clients.Store(c.ClientID, &c)
+	}
+	for _, t := range state.Tokens {
+		if now.Before(t.ExpiresAt) {
+			s.tokens.Store(t.Token, &persistedToken{
+				Token:     t.Token,
+				ClientID:  t.ClientID,
+				ExpiresAt: t.ExpiresAt,
+			})
+		}
+	}
+	slog.Info("loaded OAuth state", "clients", len(state.Clients), "tokens", len(state.Tokens))
+}
+
+func (s *OAuthServer) saveState() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var state persistedState
+	now := time.Now()
+	s.clients.Range(func(_, v any) bool {
+		state.Clients = append(state.Clients, *v.(*clientRegistration))
+		return true
+	})
+	s.tokens.Range(func(_, v any) bool {
+		t := v.(*persistedToken)
+		if now.Before(t.ExpiresAt) {
+			state.Tokens = append(state.Tokens, *t)
+		}
+		return true
+	})
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		slog.Error("marshal OAuth state", "err", err)
+		return
+	}
+	os.MkdirAll(filepath.Dir(s.statePath()), 0700)
+	if err := os.WriteFile(s.statePath(), data, 0600); err != nil {
+		slog.Error("write OAuth state", "err", err)
+	}
 }
 
 func (s *OAuthServer) fetchUpstreamMeta() error {
@@ -102,14 +173,14 @@ func (s *OAuthServer) handleProtectedResource(w http.ResponseWriter, _ *http.Req
 func (s *OAuthServer) handleMetadata(w http.ResponseWriter, _ *http.Request) {
 	base := strings.TrimSuffix(s.cfg.ResourceURL, "/")
 	meta := map[string]any{
-		"issuer":                             base,
-		"authorization_endpoint":             base + "/oauth/authorize",
-		"token_endpoint":                     base + "/oauth/token",
-		"registration_endpoint":              base + "/oauth/register",
-		"response_types_supported":           []string{"code"},
-		"grant_types_supported":              []string{"authorization_code"},
+		"issuer":                                base,
+		"authorization_endpoint":                base + "/oauth/authorize",
+		"token_endpoint":                        base + "/oauth/token",
+		"registration_endpoint":                 base + "/oauth/register",
+		"response_types_supported":              []string{"code"},
+		"grant_types_supported":                 []string{"authorization_code"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
-		"code_challenge_methods_supported":   []string{"S256"},
+		"code_challenge_methods_supported":      []string{"S256"},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(meta)
@@ -138,6 +209,7 @@ func (s *OAuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 		TokenMethod:  "none",
 	}
 	s.clients.Store(clientID, &reg)
+	s.saveState()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -319,11 +391,12 @@ func (s *OAuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ourToken := randomHex(32)
-	s.tokens.Store(ourToken, &accessToken{
+	s.tokens.Store(ourToken, &persistedToken{
 		Token:     ourToken,
 		ClientID:  ac.ClientID,
 		ExpiresAt: time.Now().Add(time.Duration(upstream.ExpiresIn) * time.Second),
 	})
+	s.saveState()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -339,7 +412,7 @@ func (s *OAuthServer) ValidateToken(token string) bool {
 	if !ok {
 		return false
 	}
-	t := val.(*accessToken)
+	t := val.(*persistedToken)
 	if time.Now().After(t.ExpiresAt) {
 		s.tokens.Delete(token)
 		return false

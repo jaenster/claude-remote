@@ -18,6 +18,8 @@ Claude's built-in sandbox has no internet, can't `git clone`, and can't reach pr
 - **Private repo access** -- mount a GitHub token, clone and work on private projects
 - **Background processes** -- long-running builds, servers, watchers that don't block tool calls
 - **MCP aggregation** -- proxy any number of MCP servers through a single endpoint
+- **Browser automation** -- ships with Chromium and [puppeteer-mcp-claude](https://github.com/jaenster/puppeteer-mcp-claude) for headless browsing
+- **Tailscale integration** -- optional userspace Tailscale connects the pod to your tailnet for accessing private services
 - **Security by design** -- namespace isolation, NetworkPolicy blocking cluster-internal traffic, resource quotas, and RBAC scoping keep a prompt-injected session from reaching anything it shouldn't
 
 ## Quick start
@@ -130,6 +132,18 @@ To set up a provider (e.g. Authentik):
 3. Note the issuer URL and put it in `auth.issuer`
 
 Then add `https://mcp.example.com/mcp` as a connector in Claude.ai settings.
+
+## Tailscale
+
+To connect the pod to your tailnet, create a Tailscale auth key and pass it as `TS_AUTHKEY`:
+
+```sh
+kubectl create secret generic tailscale-auth \
+  --from-literal=authkey=tskey-auth-... \
+  -n claude-sandbox
+```
+
+The entrypoint starts `tailscaled` in userspace networking mode before the MCP server. The pod joins your tailnet as `claude-remote` and accepts advertised routes, giving it access to any service on your tailnet.
 
 ## Network policy
 

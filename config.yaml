@@ -16,7 +16,11 @@ auth:
   # token: ""
 
 children: []
-# Example: proxy an MCP server running as a subprocess
+# Examples:
+# - name: browser
+#   command: puppeteer-mcp-claude
+#   args: ["serve"]
+#   env: {}
 # - name: redivivus
 #   command: redivivus-mcp
 #   args: ["--readonly"]

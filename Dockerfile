@@ -11,7 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git curl wget openssh-client gnupg \
     build-essential python3 python3-pip python3-venv \
     jq unzip \
+    chromium chromium-sandbox \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV CHROME_BIN=/usr/bin/chromium
 
 # Node.js 22 LTS
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -40,7 +45,19 @@ RUN curl -fsSL https://downloads.1password.com/linux/keys/1password.asc \
 
 RUN git config --system credential.helper store
 
+# Tailscale
+RUN curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg \
+    | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null \
+    && echo "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian bookworm main" \
+    > /etc/apt/sources.list.d/tailscale.list \
+    && apt-get update && apt-get install -y --no-install-recommends tailscale \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pre-install puppeteer-mcp-claude globally so child spawn is fast
+RUN npm install -g puppeteer-mcp-claude
+
 COPY --from=builder /claude-remote /usr/local/bin/claude-remote
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 
 WORKDIR /workspace
-ENTRYPOINT ["claude-remote"]
+ENTRYPOINT ["entrypoint.sh"]

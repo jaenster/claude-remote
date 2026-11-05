@@ -1,0 +1,5 @@
+claude-remote
+*.exe
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,24 @@
+server:
+  name: claude-remote
+  version: "0.1.0"
+
+sandbox:
+  workdir: /workspace
+
+auth:
+  # OIDC issuer for token validation (e.g. Authentik, Keycloak, Auth0)
+  # issuer: https://id.example.com/application/o/claude-remote/
+
+  # Public URL of this MCP server (for OAuth protected resource metadata)
+  # resource_url: https://mcp.example.com
+
+  # Simple bearer token auth (alternative to OIDC, set via AUTH_TOKEN env var)
+  # token: ""
+
+children: []
+# Example: proxy an MCP server running as a subprocess
+# - name: redivivus
+#   command: redivivus-mcp
+#   args: ["--readonly"]
+#   env:
+#     DATABASE_URL: "postgres://..."

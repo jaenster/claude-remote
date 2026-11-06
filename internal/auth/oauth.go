@@ -319,7 +319,8 @@ func (s *OAuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ourToken := randomHex(32)
-	expiresAt := time.Now().Add(time.Duration(upstream.ExpiresIn) * time.Second)
+	tokenLifetime := 30 * 24 * time.Hour
+	expiresAt := time.Now().Add(tokenLifetime)
 	if err := s.store.SaveToken(r.Context(), ourToken, ac.ClientID, expiresAt); err != nil {
 		http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
 		return
@@ -330,7 +331,7 @@ func (s *OAuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"access_token": ourToken,
 		"token_type":   "Bearer",
-		"expires_in":   upstream.ExpiresIn,
+		"expires_in":   int(tokenLifetime.Seconds()),
 	})
 }
 

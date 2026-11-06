@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,13 +15,26 @@ type Store struct {
 }
 
 func NewStore(ctx context.Context, databaseURL string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+	var pool *pgxpool.Pool
+	for attempt := 0; attempt < 30; attempt++ {
+		var err error
+		pool, err = pgxpool.New(ctx, databaseURL)
+		if err == nil {
+			if err = pool.Ping(ctx); err == nil {
+				break
+			}
+			pool.Close()
+		}
+		slog.Warn("db not ready, retrying", "attempt", attempt+1, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		pool = nil
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping: %w", err)
+	if pool == nil {
+		return nil, fmt.Errorf("gave up connecting after 30 attempts")
 	}
 	s := &Store{pool: pool}
 	if err := s.migrate(ctx); err != nil {
